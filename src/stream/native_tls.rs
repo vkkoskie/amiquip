@@ -1,6 +1,6 @@
 use super::{HandshakeStream, IoStream};
 use crate::errors::*;
-use mio::{Evented, Poll, PollOpt, Ready, Token};
+use mio::{event::Source, Interest, Registry, Token};
 use native_tls::{HandshakeError, MidHandshakeTlsStream};
 use snafu::ResultExt;
 use std::io::{self, Read, Write};
@@ -46,7 +46,7 @@ impl<S: Read + Write> InnerHandshake<S> {
     }
 }
 
-impl<S: Evented + Read + Write + Send + 'static> HandshakeStream for TlsHandshakeStream<S> {
+impl<S: Source + Read + Write + Send + 'static> HandshakeStream for TlsHandshakeStream<S> {
     type Stream = TlsStream<S>;
 
     fn progress_handshake(&mut self) -> Result<Option<Self::Stream>> {
@@ -66,46 +66,44 @@ impl<S: Evented + Read + Write + Send + 'static> HandshakeStream for TlsHandshak
     }
 }
 
-impl<S: Evented + Read + Write> Evented for TlsHandshakeStream<S> {
+impl<S: Source + Read + Write> Source for TlsHandshakeStream<S> {
     #[inline]
     fn register(
-        &self,
-        poll: &Poll,
+        &mut self,
+        registry: &Registry,
         token: Token,
-        interest: Ready,
-        opts: PollOpt,
+        interests: Interest,
     ) -> io::Result<()> {
         self.inner
             .as_ref()
             .unwrap()
             .get_ref()
-            .register(poll, token, interest, opts)
+            .register(registry, token, interests)
     }
 
     #[inline]
     fn reregister(
-        &self,
-        poll: &Poll,
+        &mut self,
+        registry: &Registry,
         token: Token,
-        interest: Ready,
-        opts: PollOpt,
+        interests: Interest,
     ) -> io::Result<()> {
         self.inner
             .as_ref()
             .unwrap()
             .get_ref()
-            .reregister(poll, token, interest, opts)
+            .reregister(registry, token, interests)
     }
 
     #[inline]
-    fn deregister(&self, poll: &Poll) -> io::Result<()> {
-        self.inner.as_ref().unwrap().get_ref().deregister(poll)
+    fn deregister(&mut self, registry: &Registry) -> io::Result<()> {
+        self.inner.as_ref().unwrap().get_ref().deregister(registry)
     }
 }
 
 pub(crate) struct TlsStream<S>(native_tls::TlsStream<S>);
 
-impl<S: Evented + Read + Write + Send + 'static> IoStream for TlsStream<S> {}
+impl<S: Source + Read + Write + Send + 'static> IoStream for TlsStream<S> {}
 
 impl<S: Read + Write> Read for TlsStream<S> {
     #[inline]
@@ -126,31 +124,29 @@ impl<S: Read + Write> Write for TlsStream<S> {
     }
 }
 
-impl<S: Evented + Read + Write> Evented for TlsStream<S> {
+impl<S: Source + Read + Write> Source for TlsStream<S> {
     #[inline]
     fn register(
-        &self,
-        poll: &Poll,
+        &mut self,
+        registry: &Registry,
         token: Token,
-        interest: Ready,
-        opts: PollOpt,
+        interests: Interest,
     ) -> io::Result<()> {
-        self.0.get_ref().register(poll, token, interest, opts)
+        self.0.get_ref().register(registry, token, interests)
     }
 
     #[inline]
     fn reregister(
-        &self,
-        poll: &Poll,
+        &mut self,
+        registry: &Registry,
         token: Token,
-        interest: Ready,
-        opts: PollOpt,
+        interests: Interest,
     ) -> io::Result<()> {
-        self.0.get_ref().reregister(poll, token, interest, opts)
+        self.0.get_ref().reregister(registry, token, interests)
     }
 
     #[inline]
-    fn deregister(&self, poll: &Poll) -> io::Result<()> {
-        self.0.get_ref().deregister(poll)
+    fn deregister(&mut self, registry: &Registry) -> io::Result<()> {
+        self.0.get_ref().deregister(registry)
     }
 }

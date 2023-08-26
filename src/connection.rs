@@ -448,7 +448,7 @@ mod amqp_url {
             .socket_addrs(|| None)
             .with_context(|_| ResolveUrlToSocketAddrSnafu { url: url.clone() })?
         {
-            let result = TcpStream::connect(&addr)
+            let result = TcpStream::connect(addr)
                 .with_context(|_| FailedToConnectSnafu { url: url.clone() })
                 .and_then(|stream| {
                     Connection::insecure_open_stream(stream, options.clone(), tuning.clone())
@@ -485,7 +485,7 @@ mod amqp_url {
             .socket_addrs(|| None)
             .with_context(|_| ResolveUrlToSocketAddrSnafu { url: url.clone() })?
         {
-            let result = TcpStream::connect(&addr)
+            let result = TcpStream::connect(addr)
                 .with_context(|_| FailedToConnectSnafu { url: url.clone() })
                 .and_then(|stream| {
                     Connection::open_tls_stream(

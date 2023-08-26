@@ -13,7 +13,8 @@ use crossbeam_channel::Receiver as CrossbeamReceiver;
 use crossbeam_channel::SendError;
 use crossbeam_channel::Sender as CrossbeamSender;
 use log::{debug, error, trace, warn};
-use mio::{Event, Evented, Events, Poll, PollOpt, Ready, Token};
+use mio::Interest;
+use mio::{event::Event, event::Source, Events, Poll, Token};
 use mio_extras::channel::sync_channel as mio_sync_channel;
 use mio_extras::channel::Receiver as MioReceiver;
 use snafu::ResultExt;
@@ -146,16 +147,12 @@ pub(crate) struct IoLoop {
 
 impl IoLoop {
     pub(crate) fn new(tuning: ConnectionTuning) -> Result<Self> {
-        let heartbeats = HeartbeatTimers::default();
+        let mut heartbeats = HeartbeatTimers::default();
 
-        let poll = Poll::new().context(CreatePollHandleSnafu)?;
-        poll.register(
-            &heartbeats.timer,
-            HEARTBEAT,
-            Ready::readable(),
-            PollOpt::edge(),
-        )
-        .context(RegisterWithPollHandleSnafu)?;
+        let mut poll = Poll::new().context(CreatePollHandleSnafu)?;
+        poll.registry()
+            .register(&mut heartbeats.timer, HEARTBEAT, Interest::READABLE)
+            .context(RegisterWithPollHandleSnafu)?;
 
         Ok(IoLoop {
             poll,
@@ -169,11 +166,12 @@ impl IoLoop {
 
     pub(crate) fn start<Auth: Sasl, S: IoStream>(
         mut self,
-        stream: S,
+        mut stream: S,
         mut options: ConnectionOptions<Auth>,
     ) -> Result<(JoinHandle<Result<()>>, FieldTable, Channel0Handle)> {
         self.poll
-            .register(&stream, STREAM, Ready::writable(), PollOpt::edge())
+            .registry()
+            .register(&mut stream, STREAM, Interest::WRITABLE)
             .context(RegisterWithPollHandleSnafu)?;
 
         self.connection_timeout = options.connection_timeout.take();
@@ -191,16 +189,12 @@ impl IoLoop {
     #[cfg(feature = "native-tls")]
     pub(crate) fn start_tls<Auth: Sasl, S: HandshakeStream>(
         mut self,
-        stream: S,
+        mut stream: S,
         mut options: ConnectionOptions<Auth>,
     ) -> Result<(JoinHandle<Result<()>>, FieldTable, Channel0Handle)> {
         self.poll
-            .register(
-                &stream,
-                STREAM,
-                Ready::readable() | Ready::writable(),
-                PollOpt::edge(),
-            )
+            .registry()
+            .register(&mut stream, STREAM, Interest::READABLE | Interest::WRITABLE)
             .context(RegisterWithPollHandleSnafu)?;
 
         self.connection_timeout = options.connection_timeout.take();
@@ -276,31 +270,27 @@ impl IoLoop {
         mut stream: S,
         options: ConnectionOptions<Auth>,
         handshake_done_tx: crossbeam_channel::Sender<(usize, FieldTable)>,
-        ch0_slot: Channel0Slot,
+        mut ch0_slot: Channel0Slot,
         have_written_to_socket: bool,
     ) -> Result<()> {
         self.poll
-            .register(
-                &ch0_slot.common.rx,
-                Token(0),
-                Ready::readable(),
-                PollOpt::edge(),
-            )
+            .registry()
+            .register(&mut ch0_slot.common.rx, Token(0), Interest::READABLE)
             .context(RegisterWithPollHandleSnafu)?;
         self.poll
+            .registry()
             .register(
-                &ch0_slot.set_blocked_rx,
+                &mut ch0_slot.set_blocked_rx,
                 SET_BLOCKED_TX,
-                Ready::readable(),
-                PollOpt::edge(),
+                Interest::READABLE,
             )
             .context(RegisterWithPollHandleSnafu)?;
         self.poll
+            .registry()
             .register(
-                &ch0_slot.alloc_chan_req_rx,
+                &mut ch0_slot.alloc_chan_req_rx,
                 ALLOC_CHANNEL,
-                Ready::readable(),
-                PollOpt::edge(),
+                Interest::READABLE,
             )
             .context(RegisterWithPollHandleSnafu)?;
         let (tune_ok, server_properties) =
@@ -363,10 +353,10 @@ impl IoLoop {
     ) -> Result<()> {
         match event.token() {
             STREAM => {
-                if event.readiness().is_writable() {
+                if event.is_writable() {
                     self.inner.write_to_stream(stream)?;
                 }
-                if event.readiness().is_readable() {
+                if event.is_readable() {
                     self.inner.read_from_stream(
                         stream,
                         &mut self.frame_buffer,
@@ -432,10 +422,10 @@ impl IoLoop {
     ) -> Result<()> {
         match event.token() {
             STREAM => {
-                if event.readiness().is_writable() {
+                if event.is_writable() {
                     self.inner.write_to_stream(stream)?;
                 }
-                if event.readiness().is_readable() {
+                if event.is_readable() {
                     self.inner.read_from_stream(
                         stream,
                         &mut self.frame_buffer,
@@ -515,7 +505,7 @@ impl IoLoop {
         is_done: G,
     ) -> Result<()>
     where
-        S: Evented,
+        S: Source,
         F: FnMut(&mut Self, &mut S, &mut State, Event) -> Result<()>,
         G: Fn(&Self, &State) -> bool,
     {
@@ -535,12 +525,8 @@ impl IoLoop {
         if self.inner.has_data_to_write() && have_written_to_socket {
             trace!("reregistering socket for readable or writable");
             self.poll
-                .reregister(
-                    stream,
-                    STREAM,
-                    Ready::readable() | Ready::writable(),
-                    PollOpt::edge(),
-                )
+                .registry()
+                .reregister(stream, STREAM, Interest::READABLE | Interest::WRITABLE)
                 .context(RegisterWithPollHandleSnafu)?;
         }
 
@@ -563,7 +549,7 @@ impl IoLoop {
             let had_data_to_write = self.inner.has_data_to_write();
 
             for event in events.iter() {
-                handle_event(self, stream, state, event)?;
+                handle_event(self, stream, state, *event)?;
             }
 
             if is_done(self, state) {
@@ -598,18 +584,15 @@ impl IoLoop {
             if self.inner.has_data_to_write() && have_written_to_socket {
                 trace!("reregistering socket for readable or writable");
                 self.poll
-                    .reregister(
-                        stream,
-                        STREAM,
-                        Ready::readable() | Ready::writable(),
-                        PollOpt::edge(),
-                    )
+                    .registry()
+                    .reregister(stream, STREAM, Interest::READABLE | Interest::WRITABLE)
                     .context(RegisterWithPollHandleSnafu)?;
             } else if had_data_to_write {
                 trace!("reregistering socket for readable only");
                 have_written_to_socket = true;
                 self.poll
-                    .reregister(stream, STREAM, Ready::readable(), PollOpt::edge())
+                    .registry()
+                    .reregister(stream, STREAM, Interest::READABLE)
                     .context(RegisterWithPollHandleSnafu)?;
             }
         }
@@ -678,8 +661,9 @@ impl Inner {
     }
 
     fn deregister_nonzero_channels(&mut self, poll: &Poll) -> Result<()> {
-        for (_, slot) in self.chan_slots.iter() {
-            poll.deregister(&slot.rx)
+        for (_, slot) in self.chan_slots.iter_mut() {
+            poll.registry()
+                .deregister(&mut slot.rx)
                 .context(DeregisterWithPollHandleSnafu)?;
         }
         self.channels_are_registered = false;
@@ -687,14 +671,10 @@ impl Inner {
     }
 
     fn reregister_nonzero_channels(&mut self, poll: &Poll) -> Result<()> {
-        for (id, slot) in self.chan_slots.iter() {
-            poll.reregister(
-                &slot.rx,
-                Token(*id as usize),
-                Ready::readable(),
-                PollOpt::edge(),
-            )
-            .context(RegisterWithPollHandleSnafu)?;
+        for (id, slot) in self.chan_slots.iter_mut() {
+            poll.registry()
+                .reregister(&mut slot.rx, Token(*id as usize), Interest::READABLE)
+                .context(RegisterWithPollHandleSnafu)?;
         }
         self.channels_are_registered = true;
         Ok(())
@@ -803,21 +783,22 @@ impl Inner {
             let mio_channel_bound = self.mio_channel_bound;
             let channels_are_registered = self.channels_are_registered;
             let result = self.chan_slots.insert(new_channel_id, |new_channel_id| {
-                let (slot, handle) = ChannelSlot::new(mio_channel_bound, new_channel_id);
-                poll.register(
-                    &slot.rx,
-                    Token(new_channel_id as usize),
-                    Ready::readable(),
-                    PollOpt::edge(),
-                )
-                .context(RegisterWithPollHandleSnafu)?;
+                let (mut slot, handle) = ChannelSlot::new(mio_channel_bound, new_channel_id);
+                poll.registry()
+                    .register(
+                        &mut slot.rx,
+                        Token(new_channel_id as usize),
+                        Interest::READABLE,
+                    )
+                    .context(RegisterWithPollHandleSnafu)?;
                 if !channels_are_registered {
                     // If we're currently in a deregistered state (i.e., too much data to
                     // write), go ahead and deregister this new channel. We do the register+
                     // deregister dance so we can call reregister on this new channel even
                     // though it hadn't existed when we deregistered all the existing
                     // channels.
-                    poll.deregister(&slot.rx)
+                    poll.registry()
+                        .deregister(&mut slot.rx)
                         .context(DeregisterWithPollHandleSnafu)?;
                 }
                 Ok((slot, handle))

@@ -23,7 +23,7 @@ input_buffer = "0.5"
 bytes = "1.4"
 amq-protocol = "7.1"
 log = "0.4"
-mio = "0.6"
+mio = { version = "0.8", features = [ "os-poll", "net" ] }
 mio-extras = "2.0"
 cookie-factory = "0.3"
 crossbeam-channel = "0.5"

@@ -70,7 +70,7 @@ impl<T: Copy + Debug> Heartbeat<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mio::{Events, Poll, PollOpt, Ready, Token};
+    use mio::{Events, Interest, Poll, Token};
     use mio_extras::timer::Builder;
 
     struct Harness {
@@ -83,10 +83,11 @@ mod tests {
         const TOKEN: Token = Token(0);
 
         fn new() -> Harness {
-            let poll = Poll::new().unwrap();
+            let mut poll = Poll::new().unwrap();
             let events = Events::with_capacity(16);
             let timer = Builder::default().tick_duration(millis(10)).build();
-            poll.register(&timer, Self::TOKEN, Ready::readable(), PollOpt::edge())
+            poll.registry()
+                .register(&timer, Self::TOKEN, Interest::READABLE)
                 .unwrap();
             Harness {
                 poll,
